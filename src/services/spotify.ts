@@ -627,4 +627,149 @@ export class SpotifyService {
       throw new Error("Failed to fetch new releases from Spotify API");
     }
   }
+
+  /**
+   * Create a new playlist for the authenticated user
+   * @param name Name of the playlist
+   * @param description Description of the playlist
+   * @param isPublic Whether the playlist should be public
+   */
+  async createPlaylist(
+    name: string,
+    description: string = "",
+    isPublic: boolean = false,
+    userId: string = "default"
+  ): Promise<string> {
+    try {
+      const token = await this.getUserAccessToken(userId);
+      
+      // First get the user's Spotify ID
+      const userResponse = await axios.get("https://api.spotify.com/v1/me", {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      
+      const spotifyUserId = userResponse.data.id;
+      
+      // Create the playlist
+      const response = await axios.post(
+        `https://api.spotify.com/v1/users/${spotifyUserId}/playlists`,
+        {
+          name,
+          description,
+          public: isPublic
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+      
+      console.log(`Created playlist: ${name} with ID: ${response.data.id}`);
+      return response.data.id;
+    } catch (error) {
+      // Enhanced error logging
+      if (axios.isAxiosError(error) && error.response) {
+        console.error("Spotify API error response:", {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data,
+          headers: error.response.headers,
+        });
+      } else {
+        console.error("Error creating playlist:", error);
+      }
+      throw new Error("Failed to create playlist");
+    }
+  }
+  
+  /**
+   * Search for a track on Spotify
+   * @param query Search query string (usually artist and track name)
+   */
+  async searchTrack(query: string, userId: string = "default"): Promise<string | null> {
+    try {
+      // Try to use user token if available, fall back to client credentials
+      let token;
+      try {
+        token = await this.getUserAccessToken(userId);
+      } catch (error) {
+        token = await this.getAccessToken();
+      }
+      
+      const response = await axios.get("https://api.spotify.com/v1/search", {
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        params: {
+          q: query,
+          type: "track",
+          limit: 1
+        }
+      });
+      
+      if (response.data.tracks.items.length > 0) {
+        return response.data.tracks.items[0].uri;
+      }
+      
+      return null; // No tracks found
+    } catch (error) {
+      console.error(`Error searching for track "${query}":`, error);
+      return null; // Return null instead of throwing to handle gracefully
+    }
+  }
+  
+  /**
+   * Add tracks to a playlist
+   * @param playlistId The Spotify playlist ID
+   * @param trackUris Array of Spotify track URIs
+   */
+  async addTracksToPlaylist(
+    playlistId: string,
+    trackUris: string[],
+    userId: string = "default"
+  ): Promise<boolean> {
+    try {
+      const token = await this.getUserAccessToken(userId);
+      
+      // Spotify API has a limit of 100 tracks per request
+      // So we need to chunk the tracks array
+      for (let i = 0; i < trackUris.length; i += 100) {
+        const chunk = trackUris.slice(i, i + 100);
+        
+        await axios.post(
+          `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+          {
+            uris: chunk
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+        
+        console.log(`Added ${chunk.length} tracks to playlist ${playlistId}`);
+      }
+      
+      return true;
+    } catch (error) {
+      // Enhanced error logging
+      if (axios.isAxiosError(error) && error.response) {
+        console.error("Spotify API error response:", {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data,
+          headers: error.response.headers,
+        });
+      } else {
+        console.error("Error adding tracks to playlist:", error);
+      }
+      throw new Error("Failed to add tracks to playlist");
+    }
+  }
 }

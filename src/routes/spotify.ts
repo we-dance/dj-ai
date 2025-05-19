@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import path from "path";
 import axios from "axios";
 import crypto from "crypto";
+import { songLibrary } from "../utils/songLibrary";
 
 const router = Router();
 
@@ -349,6 +350,98 @@ router.get("/playlist/:id/tracks", async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Error fetching playlist tracks:", error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "An unknown error occurred"
+    });
+  }
+});
+
+/**
+ * GET /spotify/create-library-playlist
+ * Creates a playlist with all songs from the songLibrary
+ * This endpoint should only be called once
+ * TODO: remove this endpoint
+ */
+router.get("/create-library-playlist", async (req: Request, res: Response) => {
+  try {
+    console.log('Attempting to create playlist with song library...');
+    const spotifyService = getSpotifyService();
+    
+    // Check if we have user tokens before proceeding
+    try {
+      await spotifyService.getUserAccessToken();
+      console.log('User is authenticated, proceeding to create playlist');
+    } catch (authError) {
+      console.log('User not authenticated, redirecting to login');
+      return res.redirect('/spotify/login');
+    }
+    
+    // Parse the song library
+    const songList = songLibrary
+      .trim()
+      .split('\n')
+      .filter(line => line.trim() !== '')
+      .map(line => line.trim());
+    
+    console.log(`Parsed ${songList.length} songs from song library`);
+    
+    // Create a new playlist
+    const playlistName = "DJ AI Song Library";
+    const playlistDescription = "Automatically generated playlist containing all songs from the DJ AI library";
+    const playlistId = await spotifyService.createPlaylist(playlistName, playlistDescription, false);
+    
+    // Search for each song and collect URIs
+    console.log("Searching for songs on Spotify...");
+    const trackUris: string[] = [];
+    const notFound: string[] = [];
+    let foundCount = 0;
+    
+    // Process songs in batches to avoid overwhelming the API
+    for (const song of songList) {
+      const uri = await spotifyService.searchTrack(song);
+      if (uri) {
+        trackUris.push(uri);
+        foundCount++;
+        if (foundCount % 10 === 0) {
+          console.log(`Found ${foundCount} songs so far...`);
+        }
+      } else {
+        notFound.push(song);
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    console.log(`Found ${trackUris.length} songs on Spotify, ${notFound.length} songs not found`);
+    
+    // Add the found tracks to the playlist
+    if (trackUris.length > 0) {
+      await spotifyService.addTracksToPlaylist(playlistId, trackUris);
+      console.log(`Successfully added ${trackUris.length} tracks to playlist ${playlistId}`);
+    }
+    
+    return res.status(200).json({
+      success: true,
+      data: {
+        playlistId,
+        playlistName,
+        totalSongs: songList.length,
+        foundSongs: trackUris.length,
+        notFoundSongs: notFound.length,
+        notFound: notFound
+      }
+    });
+    
+  } catch (error) {
+    console.error("Error creating library playlist:", error);
+    
+    // If the error is due to not being authenticated, redirect to login
+    if (error instanceof Error && error.message === 'User is not authenticated') {
+      return res.redirect('/spotify/login');
+    }
+    
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : "An unknown error occurred"

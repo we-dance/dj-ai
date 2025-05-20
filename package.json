@@ -4,9 +4,9 @@
   "description": "A server that generates music playlists using different LLM providers",
   "main": "dist/index.js",
   "scripts": {
-    "start": "ts-node src/index.ts",
+    "start": "node dist/index.js",
     "dev": "ts-node-dev src/index.ts",
-    "build": "tsc && mkdir -p public && touch public/.vercel_build_output",
+    "build": "tsc && cp -r src/api api && mkdir -p public && touch public/.vercel_build_output",
     "watch": "tsc -w"
   },
   "dependencies": {
@@ -16,7 +16,8 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "glob": "^10.0.0",
-    "rimraf": "^5.0.0"
+    "rimraf": "^5.0.0",
+    "next": "^14.0.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.15",
@@ -25,5 +26,8 @@
     "ts-node": "^10.9.1",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
   }
 }

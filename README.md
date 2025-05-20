@@ -98,6 +98,32 @@ The new playlist will be available in your Spotify account with the songs organi
 - Peak time songs
 - Cooldown songs
 
+### Local Development
+
+### Vercel Deployment
+
+This application can be deployed to Vercel. Follow these steps:
+
+1. Fork or clone the repository to your GitHub account
+2. Sign up for a [Vercel account](https://vercel.com)
+3. Create a new project in Vercel and connect it to your GitHub repository
+4. Configure the following environment variables in Vercel's project settings:
+   - `LLM_PROVIDER`: Choose "gemini" or "deepseek"
+   - `GEMINI_API_KEY`: Your Google Gemini API key
+   - `DEEPSEEK_API_KEY`: Your Deepseek API key
+   - `SPOTIFY_CLIENT_ID`: Your Spotify application client ID
+   - `SPOTIFY_CLIENT_SECRET`: Your Spotify application client secret
+5. Important: Update the Spotify redirect URI in your Spotify Developer Dashboard to match your Vercel domain (e.g., `https://your-app-name.vercel.app/callback`)
+6. Deploy the project
+
+#### Troubleshooting Vercel Deployment
+
+If you encounter a 404 error after deployment, check the following:
+- Ensure all environment variables are correctly set in Vercel
+- Verify that your Spotify redirect URI is updated to use your Vercel domain
+- Check the function logs in the Vercel dashboard for any errors
+- Make sure your Spotify app has the correct scopes enabled
+
 ## Limitations
 
 - **BPM Detection**: The application cannot access Spotify's "Audio Features" API to get BPM (tempo) information. This is a limitation of the Spotify API permissions. The AI makes recommendations based on music style and not actual BPM data.

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node api/index.js",
     "dev": "ts-node-dev src/index.ts",
-    "build": "echo 'no build step needed'",
+    "build": "tsc",
     "vercel-build": "npm run build",
     "watch": "tsc -w"
   },

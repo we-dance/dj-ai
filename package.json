@@ -4,9 +4,9 @@
   "description": "A server that generates music playlists using different LLM providers",
   "main": "dist/index.js",
   "scripts": {
-    "start": "ts-node src/index.ts",
+    "start": "node api/index.js",
     "dev": "ts-node-dev src/index.ts",
-    "build": "tsc && cp -r dist api/ || xcopy dist api\\dist\\ /E /I /Y",
+    "build": "tsc && cp api/index.js api/index.js.bak && cp -r dist/. api/dist || mkdir -p api/dist && cp -r dist/. api/dist",
     "watch": "tsc -w"
   },
   "dependencies": {

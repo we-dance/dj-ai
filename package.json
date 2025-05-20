@@ -7,7 +7,6 @@
     "start": "node api/index.js",
     "dev": "ts-node-dev src/index.ts",
     "build": "echo 'no build step needed'",
-    "vercel-build": "pnpm dev",
     "watch": "tsc -w"
   },
   "dependencies": {

@@ -4,17 +4,9 @@
     {
       "src": "api/index.js",
       "use": "@vercel/node"
-    },
-    {
-      "src": "dist/**",
-      "use": "@vercel/static"
     }
   ],
   "routes": [
-    {
-      "src": "/(.*).(js|css|json|ico|svg|jpg|jpeg|png|gif)",
-      "dest": "/dist/$1.$2"
-    },
     {
       "src": "/(.*)",
       "dest": "/api/index.js"
@@ -23,11 +15,7 @@
   "functions": {
     "api/index.js": {
       "memory": 1024,
-      "maxDuration": 60,
-      "includeFiles": ["dist/**", "api/**", ".env"]
+      "maxDuration": 60
     }
-  },
-  "env": {
-    "NODE_ENV": "production"
   }
 } 

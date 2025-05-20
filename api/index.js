@@ -1,10 +1,52 @@
 // Vercel serverless function for Express app
 const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const generateRoutes = require('../dist/routes/generate').default;
-const spotifyRoutes = require('../dist/routes/spotify').default;
-const { getSpotifyService } = require('../dist/routes/spotify');
+
+// Handle potential missing dependencies
+let bodyParser, cors;
+try {
+  bodyParser = require('body-parser');
+} catch (error) {
+  console.warn('body-parser not found, using express.json() instead');
+  bodyParser = {
+    json: () => express.json(),
+    urlencoded: (options) => express.urlencoded(options)
+  };
+}
+
+try {
+  cors = require('cors');
+} catch (error) {
+  console.warn('cors not found, using a simple middleware instead');
+  cors = () => (req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
+    return next();
+  };
+}
+
+let generateRoutes, spotifyRoutes, getSpotifyService;
+try {
+  generateRoutes = require('../dist/routes/generate').default;
+  spotifyRoutes = require('../dist/routes/spotify').default;
+  const spotifyModule = require('../dist/routes/spotify');
+  getSpotifyService = spotifyModule.getSpotifyService;
+} catch (error) {
+  console.error('Failed to load route modules:', error);
+  // Provide fallback routes if modules can't be loaded
+  generateRoutes = express.Router().post('/', (req, res) => {
+    res.status(500).json({ error: 'Generate module not available' });
+  });
+  spotifyRoutes = express.Router().get('/*', (req, res) => {
+    res.status(500).json({ error: 'Spotify module not available' });
+  });
+  getSpotifyService = () => ({ 
+    exchangeCodeForTokens: () => Promise.reject('Spotify service not available')
+  });
+}
 
 // Create Express app
 const app = express();

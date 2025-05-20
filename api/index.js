@@ -1,176 +1,300 @@
-// Vercel serverless function for Express app
 const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
 
-// Handle potential missing dependencies
-let bodyParser, cors;
-try {
-  bodyParser = require('body-parser');
-} catch (error) {
-  console.warn('body-parser not found, using express.json() instead');
-  bodyParser = {
-    json: () => express.json(),
-    urlencoded: (options) => express.urlencoded(options)
-  };
-}
+// Debug info for Vercel deployment
+const isVercel = process.env.VERCEL === '1';
+console.log(`Running in ${isVercel ? 'Vercel' : 'local'} environment`);
+console.log('Current directory:', process.cwd());
 
 try {
-  cors = require('cors');
-} catch (error) {
-  console.warn('cors not found, using a simple middleware instead');
-  cors = () => (req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
+  const distExists = fs.existsSync('./dist');
+  const apiDistExists = fs.existsSync('./api/dist');
+  console.log(`./dist exists: ${distExists}`);
+  console.log(`./api/dist exists: ${apiDistExists}`);
+  
+  if (distExists) {
+    console.log('Contents of ./dist:', fs.readdirSync('./dist'));
+    if (fs.existsSync('./dist/routes')) {
+      console.log('Contents of ./dist/routes:', fs.readdirSync('./dist/routes'));
     }
-    return next();
-  };
+  }
+  
+  if (apiDistExists) {
+    console.log('Contents of ./api/dist:', fs.readdirSync('./api/dist'));
+    if (fs.existsSync('./api/dist/routes')) {
+      console.log('Contents of ./api/dist/routes:', fs.readdirSync('./api/dist/routes'));
+    }
+  }
+} catch (err) {
+  console.error('Error checking directories:', err);
 }
 
-let generateRoutes, spotifyRoutes, getSpotifyService;
-try {
-  generateRoutes = require('../dist/routes/generate').default;
-  spotifyRoutes = require('../dist/routes/spotify').default;
-  const spotifyModule = require('../dist/routes/spotify');
-  getSpotifyService = spotifyModule.getSpotifyService;
-} catch (error) {
-  console.error('Failed to load route modules:', error);
-  // Provide fallback routes if modules can't be loaded
-  generateRoutes = express.Router().post('/', (req, res) => {
-    res.status(500).json({ error: 'Generate module not available' });
-  });
-  spotifyRoutes = express.Router().get('/*', (req, res) => {
-    res.status(500).json({ error: 'Spotify module not available' });
-  });
-  getSpotifyService = () => ({ 
-    exchangeCodeForTokens: () => Promise.reject('Spotify service not available')
-  });
-}
-
-// Create Express app
+// Initialize express app
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Add routes
-app.use("/generate", generateRoutes);
-app.use("/spotify", spotifyRoutes);
+// Try to load the TypeScript compiled modules or provide fallbacks
+let generateRoutes;
+let spotifyRoutes;
 
-// Root route for health check
+// Try to load the generate routes
+try {
+  // Try multiple possible paths
+  const possiblePaths = [
+    '../dist/routes/generate.js',
+    './dist/routes/generate.js',
+    './api/dist/routes/generate.js'
+  ];
+  
+  let generateModule = null;
+  for (const modulePath of possiblePaths) {
+    try {
+      generateModule = require(modulePath);
+      console.log(`Successfully loaded generate routes from ${modulePath}`);
+      break;
+    } catch (err) {
+      console.log(`Failed to load from ${modulePath}:`, err.message);
+    }
+  }
+  
+  if (generateModule) {
+    generateRoutes = generateModule.default || generateModule;
+  } else {
+    throw new Error('Could not find generate routes module in any location');
+  }
+} catch (error) {
+  console.error('Error loading generate routes:', error);
+  // Fallback for generate routes
+  generateRoutes = express.Router().get('/*', (req, res) => {
+    res.status(500).json({ error: 'Generate module not available' });
+  });
+}
+
+// Try to load the spotify routes
+try {
+  // Try multiple possible paths
+  const possiblePaths = [
+    '../dist/routes/spotify.js',
+    './dist/routes/spotify.js',
+    './api/dist/routes/spotify.js'
+  ];
+  
+  let spotifyModule = null;
+  for (const modulePath of possiblePaths) {
+    try {
+      spotifyModule = require(modulePath);
+      console.log(`Successfully loaded spotify routes from ${modulePath}`);
+      break;
+    } catch (err) {
+      console.log(`Failed to load from ${modulePath}:`, err.message);
+    }
+  }
+  
+  if (spotifyModule) {
+    spotifyRoutes = spotifyModule.default || spotifyModule;
+  } else {
+    throw new Error('Could not find spotify routes module in any location');
+  }
+} catch (error) {
+  console.error('Error loading spotify routes:', error);
+  
+  // Try to load the standalone spotify module as a fallback
+  try {
+    const standaloneSpotify = require('./standalone-spotify');
+    console.log('Loaded standalone Spotify module as fallback');
+    spotifyRoutes = standaloneSpotify.createMinimalSpotifyRouter();
+  } catch (fallbackError) {
+    console.error('Failed to load standalone Spotify module:', fallbackError);
+    // Final fallback if even the standalone module fails
+    spotifyRoutes = express.Router().get('/*', (req, res) => {
+      res.status(500).json({ error: 'Spotify module not available' });
+    });
+  }
+}
+
+// Mount routes
+app.use('/generate', generateRoutes);
+app.use('/spotify', spotifyRoutes);
+
+// Root route
 app.get('/', (req, res) => {
   res.json({
-    message: "DJ AI Server API",
-    status: "online",
-    documentation: "/playlist-generator"
+    message: 'DJ AI Server API',
+    ui: {
+      '/playlist-generator': 'UI to generate AI playlists from Spotify playlists'
+    },
+    endpoints: {
+      '/generate': 'POST - Generate a music playlist (required: venue, date, style; optional: playlistId, useSpotifyLibrary)',
+      '/spotify/generate-from-playlist': 'POST - Generate a playlist from a specific Spotify playlist (required: playlistId)',
+      '/spotify/generate-ai-playlist': 'POST - Generate a playlist from the DJ AI Song Library (required: venue, date, style)',
+      '/spotify/verify': 'GET - Verify Spotify API authentication'
+    }
   });
 });
 
-// Serve the playlist generator page
+// Callback route for Spotify OAuth
+app.get('/callback', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta http-equiv="refresh" content="3;url=/playlist-generator" />
+        <title>Redirecting...</title>
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; padding-top: 50px; }
+          .container { max-width: 600px; margin: 0 auto; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>Successfully logged in with Spotify!</h1>
+          <p>You will be redirected to the playlist generator in a few seconds.</p>
+          <p>If you are not redirected, <a href="/playlist-generator">click here</a>.</p>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+// Serve the playlist generator HTML
 app.get('/playlist-generator', (req, res) => {
-  // This is the same HTML that's in your src/index.ts file
   res.send(`
     <!DOCTYPE html>
     <html>
       <head>
         <title>DJ AI Playlist Generator</title>
         <style>
-          body { 
-            font-family: Arial, sans-serif; 
+          body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
-            background-color: #f5f5f5;
           }
-          .container {
-            background-color: white;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            padding: 30px;
+          h1 {
+            color: #1DB954;
+            text-align: center;
           }
-          h1 { color: #1DB954; text-align: center; }
-          form { display: flex; flex-direction: column; }
-          label { margin-top: 15px; font-weight: bold; }
-          input, select { padding: 10px; margin: 5px 0 15px; border-radius: 5px; border: 1px solid #ddd; }
-          button { 
-            background-color: #1DB954; 
-            color: white; 
-            border: none; 
-            padding: 12px; 
-            border-radius: 5px; 
-            margin-top: 20px; 
-            cursor: pointer;
+          form {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+          }
+          .form-group {
+            margin-bottom: 15px;
+          }
+          label {
+            display: block;
+            margin-bottom: 5px;
             font-weight: bold;
           }
-          button:hover { background-color: #19a34a; }
-          .result { 
-            margin-top: 20px; 
-            padding: 15px; 
-            border: 1px solid #ddd; 
-            border-radius: 5px; 
-            background-color: #f9f9f9; 
-            white-space: pre-wrap; 
-            display: none;
+          input, select {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+          }
+          button {
+            background: #1DB954;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+          }
+          button:hover {
+            background: #18a448;
+          }
+          #result {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            min-height: 100px;
           }
           .note {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #fff8e1;
-            border-left: 4px solid #ffc107;
+            font-size: 14px;
+            color: #666;
+            margin-top: 8px;
+          }
+          .loading {
+            text-align: center;
+            color: #666;
+          }
+          .error {
+            color: #d9534f;
+            background: #f9f2f2;
+            padding: 10px;
             border-radius: 4px;
+            margin-top: 10px;
+          }
+          .success {
+            color: #5cb85c;
           }
         </style>
       </head>
       <body>
-        <div class="container">
-          <h1>DJ AI Playlist Generator</h1>
-          
-          <form id="playlistForm">
+        <h1>DJ AI Playlist Generator</h1>
+        <p>Create AI-generated DJ sets based on your Spotify playlists</p>
+        
+        <form id="playlistForm">
+          <div class="form-group">
             <label for="venue">Venue:</label>
-            <input type="text" id="venue" name="venue" required placeholder="La Tropical, Casa de la Música, etc.">
-            
+            <input type="text" id="venue" name="venue" placeholder="e.g. Beach Club" required>
+          </div>
+          
+          <div class="form-group">
             <label for="date">Date:</label>
             <input type="date" id="date" name="date" required>
-            
+          </div>
+          
+          <div class="form-group">
             <label for="style">Style:</label>
             <select id="style" name="style" required>
-              <option value="Timba heavy">Timba heavy</option>
-              <option value="Traditional Son">Traditional Son</option>
-              <option value="Mixed Cuban">Mixed Cuban</option>
-              <option value="Contemporary Cuban fusion">Contemporary Cuban fusion</option>
+              <option value="">-- Select a style --</option>
+              <option value="lounge">Lounge</option>
+              <option value="deep house">Deep House</option>
+              <option value="tech house">Tech House</option>
+              <option value="progressive house">Progressive House</option>
+              <option value="drum and bass">Drum and Bass</option>
+              <option value="trance">Trance</option>
+              <option value="techno">Techno</option>
             </select>
-            
-            <label for="playlistId">Spotify Playlist ID or URL:</label>
-            <input type="text" id="playlistId" name="playlistId" placeholder="e.g., 37i9dQZF1DXdSjVZQzv2tl or full playlist URL">
-            
-            <div class="note">
-              <p><strong>Note:</strong> You need to login with Spotify first to use this feature.</p>
-              <p>If you haven't logged in yet, <a href="/spotify/login">click here to login with Spotify</a>.</p>
-            </div>
-            
-            <button type="submit">Generate Playlist</button>
-          </form>
-          
-          <div id="result" class="result"></div>
-          <div id="loading" style="display: none; text-align: center; margin-top: 20px;">
-            Generating playlist... This may take a minute or two.
           </div>
+          
+          <div class="form-group">
+            <label for="playlistId">Spotify Playlist ID or URL:</label>
+            <input type="text" id="playlistId" name="playlistId" placeholder="e.g. https://open.spotify.com/playlist/37i9dQZF1DX6tEG8AQim1C">
+            <p class="note">Enter a Spotify playlist URL or ID to use your own playlist as a source.</p>
+          </div>
+          
+          <p class="note">Note: You need to <a href="/spotify/login">login with Spotify</a> to use this feature.</p>
+          
+          <button type="submit">Generate Playlist</button>
+        </form>
+        
+        <div id="result">
+          <p>Results will appear here...</p>
         </div>
         
         <script>
           document.getElementById('playlistForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p class="loading">Generating your playlist... This may take a minute...</p>';
+            
             const venue = document.getElementById('venue').value;
             const date = document.getElementById('date').value;
             const style = document.getElementById('style').value;
             const playlistId = document.getElementById('playlistId').value;
-            
-            const loadingDiv = document.getElementById('loading');
-            const resultDiv = document.getElementById('result');
-            
-            resultDiv.style.display = 'none';
-            loadingDiv.style.display = 'block';
             
             try {
               const response = await fetch('/generate', {
@@ -178,101 +302,53 @@ app.get('/playlist-generator', (req, res) => {
                 headers: {
                   'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ venue, date, style, playlistId })
+                body: JSON.stringify({
+                  venue,
+                  date,
+                  style,
+                  playlistId: playlistId || undefined
+                })
               });
               
               const data = await response.json();
               
-              resultDiv.textContent = JSON.stringify(data, null, 2);
-              resultDiv.style.display = 'block';
-              
-              if (data.success && data.data && data.data.newPlaylistId) {
-                const playlistUrl = 'https://open.spotify.com/playlist/' + data.data.newPlaylistId;
-                
-                // Add playlist link to results
-                const linkPara = document.createElement('p');
-                linkPara.innerHTML = '<strong>Your playlist is ready!</strong> <a href="' + playlistUrl + '" target="_blank">Open in Spotify</a>';
-                resultDiv.prepend(linkPara);
+              if (!response.ok) {
+                resultDiv.innerHTML = '<div class="error">' + (data.error || 'An error occurred') + '</div>';
+                return;
               }
+              
+              let resultHtml = '<h3>Your AI-Generated Playlist:</h3>';
+              
+              if (data.playlistUrl) {
+                resultHtml += '<p class="success">✅ Playlist created! <a href="' + data.playlistUrl + '" target="_blank">Open in Spotify</a></p>';
+              }
+              
+              if (data.playlist && data.playlist.length > 0) {
+                resultHtml += '<ol>';
+                data.playlist.forEach(track => {
+                  resultHtml += '<li>' + track.name + ' - ' + track.artists.join(', ') + '</li>';
+                });
+                resultHtml += '</ol>';
+              }
+              
+              resultDiv.innerHTML = resultHtml;
             } catch (error) {
-              resultDiv.textContent = 'Error generating playlist: ' + error.message;
-              resultDiv.style.display = 'block';
-            } finally {
-              loadingDiv.style.display = 'none';
+              resultDiv.innerHTML = '<div class="error">Error: ' + error.message + '</div>';
             }
           });
+          
+          // Set default date to today
+          document.getElementById('date').valueAsDate = new Date();
         </script>
       </body>
     </html>
   `);
 });
 
-// Spotify callback handler
-app.get('/callback', async (req, res) => {
-  try {
-    const { code, state, error } = req.query;
-    
-    if (error) {
-      return res.status(400).json({
-        success: false,
-        error: `Authorization failed: ${error}`
-      });
-    }
-    
-    if (!code) {
-      return res.status(400).json({
-        success: false,
-        error: "Authorization code not received"
-      });
-    }
-    
-    const spotifyService = getSpotifyService();
-    await spotifyService.exchangeCodeForTokens(code);
-    
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Authentication Successful</title>
-          <meta http-equiv="refresh" content="3;url=/playlist-generator">
-          <style>
-            body { 
-              font-family: Arial, sans-serif; 
-              text-align: center; 
-              margin-top: 50px; 
-              background-color: #f5f5f5;
-            }
-            .container {
-              background-color: white;
-              border-radius: 10px;
-              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-              padding: 30px;
-              max-width: 600px;
-              margin: 0 auto;
-            }
-            h1 { color: #1DB954; }
-            p { margin: 20px 0; }
-            .redirect { color: #999; font-size: 14px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>Authentication Successful!</h1>
-            <p>Your Spotify account has been connected successfully.</p>
-            <p>You will be redirected to the playlist generator in a few seconds...</p>
-            <p class="redirect">If you're not redirected, <a href="/playlist-generator">click here</a>.</p>
-          </div>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error("Error handling Spotify callback:", error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : "An unknown error occurred"
-    });
-  }
+// Handle 404
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Export the Express API
-module.exports = app; 
+// Export the Express app
+module.exports = app;

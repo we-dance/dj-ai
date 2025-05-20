@@ -1,7 +1,4 @@
 // Vercel serverless function for Express app
-const { createServer } = require('http');
-const { parse } = require('url');
-const next = require('next');
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node api/index.js",
     "dev": "ts-node-dev src/index.ts",
-    "build": "tsc && cp api/index.js api/index.js.bak && cp -r dist/. api/dist || mkdir -p api/dist && cp -r dist/. api/dist",
+    "build": "chmod +x ./vercel-build.sh && ./vercel-build.sh",
     "watch": "tsc -w"
   },
   "dependencies": {

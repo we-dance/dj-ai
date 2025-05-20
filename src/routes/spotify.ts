@@ -1,15 +1,17 @@
 import { Router, Request, Response } from "express";
 import { SpotifyService } from "../services/spotify";
-import dotenv from "dotenv";
-import path from "path";
-import axios from "axios";
 import crypto from "crypto";
 import { songLibrary } from "../utils/songLibrary";
+import { ProviderFactory } from "../llm/providerFactory";
+import { PromptBuilder } from "../utils/promptBuilder";
 
 const router = Router();
 
 // Create service only when needed - use a singleton pattern
 let spotifyServiceInstance: SpotifyService | null = null;
+// Store the library playlist ID
+let libraryPlaylistId: string | null = null;
+
 export const getSpotifyService = () => {
   if (!spotifyServiceInstance) {
     try {
@@ -20,6 +22,15 @@ export const getSpotifyService = () => {
     }
   }
   return spotifyServiceInstance;
+};
+
+// Function to set or get the library playlist ID
+export const getLibraryPlaylistId = (): string | null => {
+  return libraryPlaylistId;
+};
+
+export const setLibraryPlaylistId = (id: string): void => {
+  libraryPlaylistId = id;
 };
 
 /**
@@ -358,6 +369,79 @@ router.get("/playlist/:id/tracks", async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /spotify/library-playlist
+ * Gets the tracks from the DJ AI Song Library playlist
+ * If the library playlist ID is not set, it first searches for it by name
+ */
+router.get("/library-playlist", async (req: Request, res: Response) => {
+  try {
+    console.log('Attempting to fetch library playlist tracks...');
+    const spotifyService = getSpotifyService();
+    
+    // Check if we have user tokens before proceeding
+    try {
+      await spotifyService.getUserAccessToken();
+      console.log('User is authenticated, proceeding to fetch library playlist');
+    } catch (authError) {
+      console.log('User not authenticated, redirecting to login');
+      return res.redirect('/spotify/login');
+    }
+    
+    // If we don't have the library playlist ID stored, find it by searching user playlists
+    if (!libraryPlaylistId) {
+      console.log('Library playlist ID not found, searching for it...');
+      
+      const userPlaylists = await spotifyService.getUserPlaylists();
+      const libraryPlaylist = userPlaylists.find((playlist: { name: string, id: string }) => 
+        playlist.name === "DJ AI Song Library"
+      );
+      
+      if (libraryPlaylist) {
+        libraryPlaylistId = libraryPlaylist.id;
+        console.log(`Found library playlist with ID: ${libraryPlaylistId}`);
+      } else {
+        return res.status(404).json({
+          success: false,
+          error: "Library playlist not found. Please create it first using /create-library-playlist endpoint."
+        });
+      }
+    }
+    
+    // Now get all tracks from the library playlist
+    if (!libraryPlaylistId) {
+      return res.status(404).json({
+        success: false,
+        error: "Library playlist ID not found"
+      });
+    }
+    
+    const tracks = await spotifyService.getUserPlaylistTracks(libraryPlaylistId);
+    console.log(`Retrieved ${tracks.length} tracks from library playlist`);
+    
+    return res.status(200).json({
+      success: true,
+      data: {
+        playlistId: libraryPlaylistId,
+        trackCount: tracks.length,
+        tracks
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching library playlist tracks:", error);
+    
+    // If the error is due to not being authenticated, redirect to login
+    if (error instanceof Error && error.message === 'User is not authenticated') {
+      return res.redirect('/spotify/login');
+    }
+    
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "An unknown error occurred"
+    });
+  }
+});
+
+/**
  * GET /spotify/create-library-playlist
  * Creates a playlist with all songs from the songLibrary
  * This endpoint should only be called once
@@ -390,6 +474,9 @@ router.get("/create-library-playlist", async (req: Request, res: Response) => {
     const playlistName = "DJ AI Song Library";
     const playlistDescription = "Automatically generated playlist containing all songs from the DJ AI library";
     const playlistId = await spotifyService.createPlaylist(playlistName, playlistDescription, false);
+    
+    // Store the playlist ID for future use
+    setLibraryPlaylistId(playlistId);
     
     // Search for each song and collect URIs
     console.log("Searching for songs on Spotify...");
@@ -448,5 +535,234 @@ router.get("/create-library-playlist", async (req: Request, res: Response) => {
     });
   }
 });
+
+/**
+ * POST /spotify/generate-from-playlist
+ * Generates an AI playlist using tracks from a user-provided playlist
+ * If no playlist ID is provided, uses the DJ AI Song Library
+ * Creates a new Spotify playlist with the selected tracks
+ */
+router.post("/generate-from-playlist", async (req: Request, res: Response) => {
+  try {
+    console.log('Attempting to generate AI playlist...');
+    const { venue, date, style, playlistId } = req.body;
+
+    if (!venue || !date || !style) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields: venue, date, and style are required"
+      });
+    }
+
+    let sourcePlaylistId: string;
+    let isUsingLibrary = false;
+
+    const spotifyService = getSpotifyService();
+    
+    // Check if we have user tokens before proceeding
+    try {
+      await spotifyService.getUserAccessToken();
+      console.log('User is authenticated, proceeding to generate playlist');
+    } catch (authError) {
+      console.log('User not authenticated, redirecting to login');
+      return res.redirect('/spotify/login');
+    }
+    
+    // If no playlist ID is provided, use the library playlist
+    if (!playlistId) {
+      console.log('No playlist ID provided, using library playlist');
+      isUsingLibrary = true;
+      
+      // If we don't have the library playlist ID stored, find it by searching user playlists
+      if (!libraryPlaylistId) {
+        console.log('Library playlist ID not found, searching for it...');
+        
+        const userPlaylists = await spotifyService.getUserPlaylists();
+        const libraryPlaylist = userPlaylists.find((playlist: { name: string, id: string }) => 
+          playlist.name === "DJ AI Song Library"
+        );
+        
+        if (libraryPlaylist) {
+          libraryPlaylistId = libraryPlaylist.id;
+          console.log(`Found library playlist with ID: ${libraryPlaylistId}`);
+        } else {
+          return res.status(404).json({
+            success: false,
+            error: "Library playlist not found. Please create it first using /create-library-playlist endpoint or provide a specific playlist ID."
+          });
+        }
+      }
+
+      if (!libraryPlaylistId) {
+        return res.status(404).json({
+          success: false,
+          error: "Library playlist ID not found"
+        });
+      }
+      
+      sourcePlaylistId = libraryPlaylistId;
+    } else {
+      // Extract playlist ID from URL if a full URL was provided
+      sourcePlaylistId = playlistId;
+      if (playlistId.includes('spotify.com/playlist/')) {
+        const match = playlistId.match(/playlist\/([a-zA-Z0-9]+)/);
+        if (match && match[1]) {
+          sourcePlaylistId = match[1];
+        }
+      }
+    }
+    
+    // Get all tracks from the source playlist
+    console.log(`Fetching tracks from source playlist ${sourcePlaylistId}...`);
+    const sourceTracks = await spotifyService.getPlaylistTracks(sourcePlaylistId);
+    console.log(`Retrieved ${sourceTracks.length} tracks from source playlist`);
+    
+    // Create a list of songs in the format "Artist - Title" for the AI model
+    const songList = sourceTracks.map(track => `${track.artists.join(", ")} - ${track.name}`);
+    
+    // Generate AI playlist with tracks from the source playlist
+    console.log(`Generating playlist for venue: ${venue}, date: ${date}, style: ${style}...`);
+    const prompt = PromptBuilder.buildPromptWithSongList(venue, date, style, songList);
+    const provider = ProviderFactory.getProvider();
+    const aiPlaylist = await provider.generate(prompt);
+    
+    // Parse the AI-generated playlist to extract songs
+    console.log('Parsing AI-generated playlist...');
+    const playlistSongs = parseAIPlaylist(aiPlaylist);
+    console.log(`AI selected ${playlistSongs.length} songs for the playlist`);
+    
+    // Create a new Spotify playlist
+    const playlistName = `${venue} - ${date} (${style})`;
+    const playlistDescription = `AI-generated ${style} playlist for ${venue} on ${date}`;
+    const newPlaylistId = await spotifyService.createPlaylist(playlistName, playlistDescription, false);
+    
+    // Find each song in the source playlist and get its URI
+    const trackUris: string[] = [];
+    const notFound: string[] = [];
+    
+    for (const song of playlistSongs) {
+      // Find matching track in our source tracks
+      const matchingTrack = findMatchingTrack(song, sourceTracks);
+      
+      if (matchingTrack) {
+        trackUris.push(matchingTrack.uri);
+      } else {
+        notFound.push(song);
+      }
+    }
+    
+    console.log(`Found ${trackUris.length} tracks in source playlist, ${notFound.length} songs not found`);
+    
+    // Add tracks to the playlist
+    if (trackUris.length > 0) {
+      await spotifyService.addTracksToPlaylist(newPlaylistId, trackUris);
+      console.log(`Successfully added ${trackUris.length} tracks to playlist ${newPlaylistId}`);
+    }
+    
+    return res.status(200).json({
+      success: true,
+      data: {
+        sourcePlaylistId,
+        newPlaylistId,
+        playlistName,
+        venue,
+        date,
+        style,
+        totalSongs: playlistSongs.length,
+        foundSongs: trackUris.length,
+        notFoundSongs: notFound.length,
+        notFound,
+        usingLibraryPlaylist: isUsingLibrary,
+        aiPlaylist
+      }
+    });
+    
+  } catch (error) {
+    console.error("Error generating AI playlist:", error);
+    
+    // If the error is due to not being authenticated, redirect to login
+    if (error instanceof Error && error.message === 'User is not authenticated') {
+      return res.redirect('/spotify/login');
+    }
+    
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "An unknown error occurred"
+    });
+  }
+});
+
+/**
+ * Parse the AI-generated playlist text to extract songs
+ * @param playlistText The text of the AI-generated playlist
+ * @returns An array of song strings in "Artist - Title" format
+ */
+function parseAIPlaylist(playlistText: string): string[] {
+  // Split by newlines and filter out non-songs
+  const lines = playlistText.split('\n');
+  
+  // Find song entries which typically follow patterns like:
+  // 1. Artist - Title
+  // 1) Artist - Title
+  // Artist - Title
+  const songRegex = /^\s*(\d+[\.\)]\s*)?(.+?)\s*-\s*(.+?)\s*$/;
+  
+  const songs: string[] = [];
+  
+  for (const line of lines) {
+    const match = line.match(songRegex);
+    if (match) {
+      const artist = match[2].trim();
+      const title = match[3].trim();
+      songs.push(`${artist} - ${title}`);
+    }
+  }
+  
+  return songs;
+}
+
+/**
+ * Find a matching track in the library based on artist and title
+ * @param songString Song in "Artist - Title" format
+ * @param libraryTracks Array of library tracks
+ * @returns Matching track or null if not found
+ */
+function findMatchingTrack(songString: string, libraryTracks: any[]): any | null {
+  // Parse artist and title from the song string
+  const parts = songString.split('-');
+  if (parts.length !== 2) return null;
+  
+  const artist = parts[0].trim().toLowerCase();
+  const title = parts[1].trim().toLowerCase();
+  
+  // Look for an exact match first
+  for (const track of libraryTracks) {
+    const trackArtists = track.artists.map((a: string) => a.toLowerCase());
+    const trackTitle = track.name.toLowerCase();
+    
+    // Check for exact match
+    if (trackTitle === title && trackArtists.some((a: string) => a === artist || artist.includes(a))) {
+      return track;
+    }
+  }
+  
+  // If no exact match, try a more lenient approach
+  for (const track of libraryTracks) {
+    const trackArtists = track.artists.map((a: string) => a.toLowerCase());
+    const trackTitle = track.name.toLowerCase();
+    
+    // Check if title is similar and at least one artist matches
+    if (trackTitle.includes(title) || title.includes(trackTitle)) {
+      // Check if any artist name matches or is contained
+      for (const trackArtist of trackArtists) {
+        if (trackArtist.includes(artist) || artist.includes(trackArtist)) {
+          return track;
+        }
+      }
+    }
+  }
+  
+  return null;
+}
 
 export default router; 

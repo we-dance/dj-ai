@@ -1,7 +1,5 @@
 import axios from "axios";
 import querystring from "querystring";
-import dotenv from "dotenv";
-import path from "path";
 
 export interface SpotifyTrack {
   id: string;
